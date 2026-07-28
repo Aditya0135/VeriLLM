@@ -1,0 +1,29 @@
+annotation:
+  models:
+    - qwen/qwen3.6-27b
+    - llama-3.3-70b-versatile
+    - openai/gpt-oss-120b
+  prompts_per_sample: 2
+  temperature: 0
+  max_retries: 5
+  retry_wait_seconds: 60
+  rpm_sleep_seconds: 2.2
+
+tokenizer:
+  model_name: bert-base-multilingual-uncased
+  max_length: 512
+
+training:
+  learning_rate: 2e-5
+  train_batch_size: 8
+  eval_batch_size: 8
+  num_train_epochs: 5
+  weight_decay: 0.01
+  save_total_limit: 2
+  eval_fraction: 0.2
+  seed: 42
+
+evaluation:
+  predict_batch_size: 16
+  betas: [1.0, 2.0]
+  cutoff_sweep: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]

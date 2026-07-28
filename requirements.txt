@@ -28,4 +28,7 @@ tqdm
 
 datasets
 langdetect
-#-e .
+
+scipy
+matplotlib
+-e .
