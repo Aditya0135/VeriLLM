@@ -7,7 +7,7 @@ Project context file. Read this first; it replaces re-reading the paper/dataset 
 ## 0. Scope and constraints — read before proposing work
 
 - **University coursework project.** Not a competition entry. The SemEval evaluation window is closed; there is no leaderboard to submit to and no submission-format requirement. The paper's numbers are a **reference point for the report**, not a target to chase.
-- **Everything so far is exploratory.** Partial runs are expected and fine — 268/3350 annotated samples is a working state, not a defect.
+- **Annotation is COMPLETE.** All 3,351 `train_unlabeled` rows are annotated in `annotations.jsonl` (20,481 votes, 802 errored). Do not re-run the annotation loop; it costs quota and produces nothing new.
 - **API quota is the binding constraint.** Free-tier Groq (5 rotated keys) and Tavily. Every LLM/search call costs quota that doesn't come back, which is why results are cached to disk (`reference_map.json`, `annotations.jsonl`) and every loop is resumable. **Treat these caches as the expensive artifact of the project.** Never regenerate, overwrite, or clear them to "start fresh"; always skip work that's already cached.
 - **Therefore, prefer offline work.** Anything that can be done by re-reading `annotations.jsonl`, re-aggregating labels, changing thresholds, retraining, or scoring against gold costs nothing and can be iterated freely. Anything that issues new API calls should be scoped to the smallest useful sample.
 
@@ -32,9 +32,11 @@ Official definition used by the annotators — worth matching, because the gold 
 
 | Split | Rows (`all` config) | Labels? | Languages |
 |---|---|---|---|
-| `train_unlabeled` | 3,350 | **No** (`hard_labels`/`soft_labels` are `None`) | EN, ES, FR, ZH only |
+| `train_unlabeled` | **3,351** | **No** (`hard_labels`/`soft_labels` are `None`) | FR 1850, EN 809, ES 492, zh 200 |
 | `validation` | 499 | Yes (~50/lang) | AR, DE, EN, ES, FI, FR, HI, IT, SV, ZH |
-| `test` | 1,904 | **Yes** — released post-competition (~150/lang) | above 10 + surprise: CA, CS, EU, FA |
+| `test` | **1,902** | **Yes** — released post-competition | 150/lang for the 10 above + ~100 each for surprise CA, CS, EU, FA |
+
+Verified counts (not the paper's rounded ones). Note `test` is **unbalanced**: 150 for main languages, ~100 for the four surprise ones — so a pooled mean under-weights exactly the hardest rows. **Report the macro-average over languages**, which is what the paper's Table 4 is comparable to.
 
 - Per-language configs exist too: `load_dataset("Helsinki-NLP/mu-shroom", "en")`.
 - **`train_unlabeled` rows have `id = None`** → must assign your own index (`add_id` with `with_indices=True`). Also no `wikipedia_url`.
@@ -134,15 +136,17 @@ All prompts require: spans **copied exactly** from the answer, no paraphrase, `[
 
 | Path | What it is |
 |---|---|
-| `research/BERT_classifier_final copy.ipynb` | **Most complete pipeline.** Annotation → aggregation → char labels → mBERT training → eval. Currently ahead of the non-copy version. Untracked in git. |
-| `research/BERT_classifier_final.ipynb` | Clean annotation-generation pipeline (steps 1–7), stops after the annotation loop. |
-| `research/BERT_classifier.ipynb` | Original scratch/experiment notebook. Contains a **hardcoded Tavily API key** — remove before any commit/push. |
-| `research/reference_map.json` | `{question: reference_answer}` cache from Tavily. Skips already-searched questions. |
-| `research/annotations.jsonl` | One line per sample: `{sample_id, model_input, model_output_text, reference_answer, metadata:[{model, prompt, spans}]}`. **268 of 3350 samples done.** |
+| `research/annote.ipynb` | **Annotation + aggregation pipeline** (was `model_training.ipynb`, renamed). Builds `temp_mu_shroom_llm_annotated_train_new` from `annotations.jsonl`. Change the threshold here. |
+| `research/train.ipynb` | **The live training + evaluation notebook.** Loads the saved silver dataset, tokenizes, fine-tunes mBERT, then runs the full official Mu-SHROOM scorer. This is where work continues. |
+| `research/Collecting_spans.ipynb` | Annotation collection runs. |
+| `research/validation_trained_classifier.ipynb` | Separate experiment training on the *validation* split (produced `val-trained-detector/`, `val_trained_detector/`). Not part of the main line. |
+| `research/BERT_classifier.ipynb` | Original scratch notebook. Contains a **hardcoded Tavily API key** — remove before any commit/push. |
+| `research/reference_map.json` | `{question: reference_answer}` cache from Tavily. |
+| `research/annotations.jsonl` | One line per sample: `{sample_id, model_input, model_output_text, reference_answer, metadata:[{model, prompt, spans}]}`. **COMPLETE: 3,351/3,351.** Never regenerate. |
 | `research/annotation.log` | Timestamped per-call success/failure log. |
-| `research/temp_mu_shroom_llm_annotated_train/` | `save_to_disk` HF dataset with silver `soft_labels`/`hard_labels`. |
-| `research/mbert-hallucination-detector/` | Trainer checkpoints (24/48/72/96/120). Best = **checkpoint-48**, eval_loss 0.4334. |
-| `research/mbert_hallucination_detector/` | Final saved model + tokenizer. |
+| `research/temp_mu_shroom_llm_annotated_train_new/` | `save_to_disk` HF dataset, **3,327 rows**. `hard_labels`/`soft_labels` stored in **official format** (span pairs / `{start,end,prob}`), same schema as gold val/test. Currently built at threshold **0.5** (40.15% positive chars). |
+| `research/mbert-hallucination-detector-new/` | Trainer checkpoints. Best = **checkpoint-822** (epoch 2), f1 0.5000. |
+| `research/mbert_hallucination_detector_new/` | Final saved model + tokenizer. |
 | `src/VeriLLM/`, `app.py`, `main.py`, `config/`, `params.yaml` | Empty scaffolding from `template.py`. Nothing ported out of the notebooks yet. |
 | `.env` | `API_Tavily`, `GROQ_API_KEY1`…`GROQ_API_KEY5` (rotated across models to spread rate limits). |
 
@@ -154,8 +158,8 @@ All prompts require: spans **copied exactly** from the answer, no paraphrase, `[
 
 1. **Two different label representations are in play.** The official format is a *list of `[start, end]` spans*. Our pipeline stores `hard_labels`/`soft_labels` as *per-character arrays of length `len(text)`*. Fine internally, but **convert with `labels_to_spans()` before scoring against gold**. Never feed a per-character array to something expecting official format, or vice versa.
 2. **Never run `normalize_text` on validation/test.** It changes string length and therefore invalidates the gold character offsets. It is only safe on `train_unlabeled`, where labels are derived *after* normalization.
-3. **`spans_to_character_labels` uses `text.find(span)`** — it labels only the *first* occurrence and silently drops any span the LLM didn't copy verbatim. Both are silent label loss. Worth measuring the unmatched-span rate and adding all-occurrence + fuzzy fallback matching.
-4. **Threshold mismatch:** we binarize silver labels at `soft >= 0.7`; the official gold binarization is `> 0.5`. Intentional (precision over recall on noisy LLM votes), but keep it a named constant and ablate it.
+3. **`spans_to_character_labels` uses `text.find(span)`** — labels only the *first* occurrence and silently drops non-verbatim spans. **Measured over all 41,601 spans:** 5.98% unmatched against raw dataset text (4.93% against normalized text — the 1.05pp difference is normalization damage), 1.67% occur more than once and only the first is labelled. Fix = all-occurrence matching + a whitespace/quote-normalized fallback. *Note: `find` is self-correcting for leading/trailing whitespace stripping, so offsets in the saved dataset are correct — this is pure recall loss, not misalignment.*
+4. **Threshold — RESOLVED, now 0.5.** Use `soft >= 0.5` (majority-or-tie), **not** `> 0.5`. The official gold rule is strictly `>`, but gold has ~3 annotators where `>0.5` means ≥2/3; our ensemble is **even-sized (6 votes)**, so `>0.5` demands 4/6 — stricter than a majority. Measured silver positive-char rates: `>=0.5` → **41.0%**, `>0.5` → 29.9%, `>=0.7` (old) → 21.1%. Gold is **39.6%** (val) / **41.5%** (test). `>=0.5` matches gold to within a point.
 5. **Soft labels are currently computed but unused in training.** The model trains on hard labels with cross-entropy, so it has nothing optimizing ρ. To score ρ: take `softmax(logits)[:, 1]` per token and broadcast to that token's character range via offset mapping. Soft-label (distillation / soft cross-entropy) training is the natural next step.
 6. **Evaluation gap:** the current eval loop scores token-level predictions on a split of our own silver data. That measures agreement with the LLM annotators, not with humans. Real evaluation = official IoU + ρ against `validation` / `test` gold.
 7. **Empty-prediction handling.** Items with no hallucination need the special-case rule (§2) or the IoU averages will be wrong.
@@ -165,23 +169,123 @@ All prompts require: spans **copied exactly** from the answer, no paraphrase, `[
 
 ---
 
-## 6. Status
+## 6. Status — as of 2026-07-28
 
-**Done:** dataset loading, reference retrieval + translation + caching, normalization, 6-prompt × 3-model annotation ensemble with resumability, span→char-label aggregation, mBERT token-classification training loop, token-level eval loop.
+**Done:** annotation complete (3,351/3,351); aggregation at threshold 0.5; `train.ipynb` fully wired (tokenize → train → official scorer) and run end to end; official IoU/ρ scorer implemented and verified line-by-line against the paper's §4 definitions.
 
-**Open work, ordered by value-per-API-call. Everything in the first group is free.**
+### 6.1 Results from the completed run
 
-*No API cost — do these first:*
-1. Implement the **official scorer** (char-level IoU + ρ, with empty-item special cases). Without it there is no honest number for the report.
-2. Run `mark-all` / `mark-none` baselines on `validation` — cheap, and they make any improvement legible.
-3. Score the current mBERT checkpoint on `validation`/`test`. Even a weak number beats no number.
-4. Use soft labels in the loss and emit continuous per-character probabilities, so ρ is measurable at all.
-5. Swap mBERT → XLM-R and compare. Same offset-mapping code, and the paper suggests BERT-family is the weaker base.
-6. Measure the silent-label-loss rate from `text.find` (§5.3) and the effect of the 0.7 vs 0.5 threshold (§5.4) — both are pure re-aggregation over existing `annotations.jsonl`.
-7. Port the notebook pipeline into `src/VeriLLM/`.
+Trained mBERT (`bert-base-multilingual-uncased`) on 3,285 silver rows, evaluated per epoch against **gold validation** (no `train_test_split` — see §6.2).
 
-*Costs API quota — scope deliberately:*
-8. Extend annotation beyond 268 samples. More useful per call if spent on a **balanced sample across EN/ES/FR/ZH** than on continuing sequentially, since the current 268 are whatever came first in the split.
-9. Retrieve real Wikipedia articles instead of Tavily snippets. Highest-leverage change per the paper, but re-annotation with better references means re-spending annotation quota — so validate it on a small subset before committing.
+| epoch | eval_loss | precision | recall | f1 |
+|---|---|---|---|---|
+| 1 | 0.709 | 0.586 | 0.334 | 0.4256 |
+| 2 | 0.756 | 0.553 | 0.456 | **0.5000** ← best |
+| 3 | 0.948 | 0.539 | 0.371 | 0.4395 |
+| 4 | 1.112 | 0.537 | 0.428 | 0.4760 |
+| 5 | 1.203 | 0.534 | 0.448 | 0.4869 |
 
-**Good report material regardless of scores:** per-language breakdown, the LLM-annotator agreement analysis you can already compute from the 6 votes in `annotations.jsonl` (compare it to the paper's human IAR of 0.45–0.87), threshold/base-model ablations, and honest error analysis of the failure modes in §5.
+**Use `num_train_epochs=2`.** Epochs 3–5 strictly hurt. `eval_loss` rises while f1 improves — cross-entropy punishes confidence, f1 scores decisions; this is why `metric_for_best_model="f1"` matters (selecting on loss picks epoch 1).
+
+**Official metrics on test** (earlier 0.7-threshold checkpoint — rerun after the 0.5 retrain):
+
+| | your macro | 43-team mean | best system | human ceiling | mark-all |
+|---|---|---|---|---|---|
+| **IoU** | 0.318 | 0.43 | 0.65 | 0.72 | 0.345 |
+| **ρ** | 0.367 | 0.395 | 0.65 | — | 0.013 |
+
+- IoU below the team mean in **0/14** languages; below `mark-all` overall.
+- **ρ above the team mean in 6/14** (ZH +0.093, EN +0.092, SV +0.074, ES +0.050, DE +0.016, AR +0.014) and only 0.028 off the mean overall.
+- Smallest IoU gaps: ES, EN, SV, ZH, DE (mostly trained languages). Largest: HI, FI, CS, FA (no training data). **Anomaly worth investigating: FR is 56% of training data yet sits at −0.161.**
+
+### 6.2 Split policy (decided, do not revert)
+
+No `train_test_split`. **Train** = silver `train_unlabeled`; **eval each epoch** = gold `validation` (499); **test** = gold `test` (1,902), held to the end. This means checkpoint selection is driven by *human* labels, not by agreement with our own LLM annotators.
+
+### 6.3 Root-cause diagnosis — the model has no evidence to reason from
+
+Ruled out by measurement:
+- **Label→token alignment is fine.** Round-trip IoU (gold chars → token labels → chars) = **0.909**, and near-identical for mBERT-uncased / mBERT-cased / XLM-R. Not a mask or offset bug.
+- **Silver labels are sound.** LLM-ensemble agreement by the paper's eq. (1) = **0.599**, comparable to *human* IAA on EN (0.49), ES (0.51), ZH (0.58).
+- **Labels are definitely used.** Loss with real labels 0.2323 vs shuffled 0.6522. Model fits train silver at f1 **0.907** but gold val at **0.505** — it learned the labels; they don't transfer.
+- **Generator logits are useless here.** AUC of (low logit → hallucinated) = **0.526** (0.5 = random). Confirmed independently by team *keepitsimple*, who found uncertainty alone insufficient without retrieval. Keep as a negative ablation.
+
+**The actual cause:** `tokenize_and_align_labels` feeds **only `model_output_text`**. No question, no reference. The annotator ensemble saw both; the model sees neither.
+
+Proof it is unlearnable as posed: **74.3% of token instances have a token string that appears with BOTH labels** in gold. The ceiling for *any* text-only model (perfect memorisation of the best label per token) is **76.13%**; mBERT is at 63.83%; majority baseline is 59.03%.
+
+This is exactly the official XLM-R baseline — `participant_kit/baseline_model.py` also does `tokenizer(examples['model_output_text'], ...)`, answer-only — which the paper says "ranks extremely low."
+
+### 6.4 What the literature says (searched 2026-07-28)
+
+Paper §6 significance tests over 2,618 submissions:
+- **Prompt-based vs fine-tuned: NO significant IoU difference.** Fine-tuning only helps **ρ** (p < 0.002).
+- **RAG: significantly higher IoU (p < 10⁻⁵⁹, f = 69.80%) and ρ (p < 10⁻³⁹).** The dominant effect in the whole analysis.
+- Teams relying mainly on provided data scored lower (p < 10⁻²¹) — doesn't apply to us; we built our own silver labels.
+
+**Our profile (ρ at field average, IoU far below) is precisely the fine-tuning-without-RAG signature.** That's the framing for the report.
+
+Key teams:
+- **ATLANTIS** ([arXiv:2508.05179](https://arxiv.org/pdf/2508.05179)) — closest analogue. Fine-tuned XLM-R-large on synthetic data. Input = **question + top-1 Wikipedia chunk + answer**. Ablation: **without retrieval 0.39 → with retrieval 0.49** (EN/DE/ES/FR), "better in all languages, without exception." Also: question at the **beginning** works best; and they found the model "globally under-confident" and **lowered the decision threshold** to raise IoU — matching our own sweep, which peaked at 0.10, the lowest value tested. *Our 0.327 on those same four languages vs their no-retrieval 0.39, with mBERT-base and 3.3k samples against XLM-R-large and 48k.*
+- **UCSC** ([arXiv:2505.03030](https://arxiv.org/abs/2505.03030)) — **#1 overall, no fine-tuning at all.** Retrieve → GPT-4o identifies unsupported content → map back via substring/LLM/edit-distance → MiPROv2 prompt optimization. IoU 0.61.
+- **MSA** ([arXiv:2505.20880](https://arxiv.org/pdf/2505.20880)) — same weak-labeling idea as ours, but **did not fine-tune on the weak labels**; ran the ensemble directly at inference over (question, reference, answer).
+- **PsiloQA** ([arXiv:2510.04849](https://arxiv.org/abs/2510.04849), [github.com/s-nlp/psiloqa](https://github.com/s-nlp/psiloqa), [HF s-nlp/PsiloQA](https://huggingface.co/datasets/s-nlp/PsiloQA)) — our pipeline at 20× scale. **63,792 train / 3,355 val / 2,897 test, 14 languages**, free download. Schema maps directly: `question`→`model_input`, `wiki_passage`→the context we lack, `llm_answer`→`model_output_text`, `labels` = **identical `[[start,end]]` format** to our `hard_labels`. Finding: fine-tuned encoders beat LLM prompting and uncertainty quantification.
+
+### 6.5 Code located for reuse
+
+- **`participant_kit/`** — downloaded, extracted to scratchpad; also at `https://a3s.fi/mickusti-2007780-pub/participant_kit.zip` (scorer alone: `.../scorer.py`). Contains the official XLM-R baseline. *Note it labels a token only if fully inside a gold span (`start >= label_start and end <= label_end`); ours labels on any overlap, slightly more recall-friendly.*
+- **PsiloQA `train_script.py`** — the fine-tuning script to adapt. Uses `lettucedetect` as a library (`pip install lettucedetect`); still fine-tunes from a base checkpoint, not an imported pretrained detector. The swap is ~10 lines in `build_samples()`:
+  ```python
+  labels = [{"start": int(s), "end": int(e)} for s, e in row["hard_labels"]]
+  HallucinationSample(prompt=row["model_input"],        # ← reference + question go here
+                      answer=row["model_output_text"],
+                      labels=labels, split=split_name, task_type="qa",
+                      dataset="verillm", language=row["lang"])
+  ```
+  Advantages: `prompt=` is a real input field; `max_length=8192` (ModernBERT/EuroBERT) so a full Wikipedia passage fits, unlike mBERT's 512; base model is a `--model-name` flag. For multilingual use **EuroBERT-210m/610m or mmBERT-base**, not ModernBERT-base (English-only).
+- **[LettuceDetect](https://github.com/KRLabsOrg/LettuceDetect)** (MIT) — the underlying trainer; input is context+question+answer, output is character-offset spans.
+
+---
+
+## 7. RESUME HERE — next session
+
+Nothing below has been implemented. **Ask before editing project files.**
+
+### Step 1 — pair encoding (free, ~20 lines, `train.ipynb`)
+Put the question into the input. This is the whole diagnosis in one change.
+```python
+encoding = tokenizer(example["model_input"], example["model_output_text"],
+                     truncation="only_first", max_length=512,
+                     return_offsets_mapping=True)
+seq = encoding.sequence_ids()
+# label only where seq[i] == 1; -100 on question tokens and specials
+```
+`truncation="only_first"` is essential — it cuts the question, never the answer, so character offsets stay valid. ATLANTIS ablated placement: **question at the beginning wins**. Also set `num_train_epochs=2`.
+
+### Step 2 — add the reference (free, the change that should actually move IoU)
+- **Train:** `reference_answer` already cached in `annotations.jsonl`, 3,351/3,351.
+- **Val/test:** `wikipedia_url` populated on **all** 499 + 1,902 rows → fetch via the **free, unmetered MediaWiki API**. This costs *no Tavily quota*. (§5.9's "highest-leverage change" is cheaper than it looked.)
+- Caveat to validate on a small subset first: train refs are Tavily snippets, val/test would be Wikipedia articles — a length/style mismatch that may blunt the gain.
+
+### Step 3 — lower the decision threshold
+Our sweep peaked at **0.10**, the lowest value tested and it never turned over — retest below 0.1. ATLANTIS independently reported the same under-confidence. Tune on validation only, never test; report the official 0.5 as the headline and the sweep as analysis.
+
+### Step 4 — scale up (optional)
+Adopt PsiloQA's `train_script.py` (§6.5) and/or concatenate its 63,792 rows with ours. It ships `wiki_passage`, so it fixes context and data scarcity together, for zero API calls. Covers CA/CS/EU/FA, where we score worst.
+
+### Still open from before
+- Soft labels are computed but **unused in the loss** — nothing optimises ρ. Soft cross-entropy against the vote fraction is the fix.
+- Re-run the official scorer on the 0.5-threshold checkpoint; the §6.1 test numbers are from the older 0.7 model.
+- Fix `text.find` label loss (§5.3): all-occurrence + normalized fallback.
+- Swap base model → XLM-R / EuroBERT / mmBERT.
+- Port notebooks into `src/VeriLLM/` (still empty scaffolding).
+- Strip the hardcoded Tavily key from `BERT_classifier.ipynb` before any push.
+
+### Report material already computed (all free, all in hand)
+- Per-language IoU/ρ vs the 43-team mean, best system, human ceiling, and mark-all (§6.1).
+- LLM-ensemble agreement 0.599 vs human IAA 0.49–0.87 via the paper's eq. (1).
+- Threshold ablation 0.5 / 0.6 / 0.7 with positive-char rates against gold.
+- Negative ablation: generator logits, AUC 0.526.
+- Text-only ceiling analysis: 74.3% ambiguous tokens, 76.13% ceiling vs 63.83% achieved.
+- Round-trip alignment 0.909 across three tokenizers.
+- **Framing:** *"a distilled no-retrieval token classifier reaches 0.318 IoU / 0.367 ρ — below the 0.43 field mean on IoU but within 0.03 on ρ, with the deficit concentrated in languages absent from training. This reproduces the effect the task paper attributes to fine-tuning while isolating the absence of the effect it attributes to RAG."*

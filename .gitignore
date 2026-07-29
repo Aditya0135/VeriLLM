@@ -218,5 +218,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 docs
-research/mbert_hallucination_detector
-research/mbert-hallucination-detector
+research/artifacts
+research/xlm-roberta-base-silver-checkpoints
+research/xlm-roberta-base-silver-final
+research/xlm-roberta-base-silver-with-ref-checkpoints
+research/xlm-roberta-base-silver-with-ref-final
