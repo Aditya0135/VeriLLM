@@ -171,7 +171,10 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
+CLAUDE.md
+.claude
+.agents
+docs
 # Pyre type checker
 .pyre/
 
